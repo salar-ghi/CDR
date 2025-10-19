@@ -4,7 +4,6 @@ import gzip
 import pyodbc
 import csv
 from datetime import datetime
-import time
 
 # FTP connection details
 FTP_HOST = "ftp.rahyab.ir"
@@ -18,11 +17,11 @@ if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 print("Step 1: Created downloads folder if not exists.")
 
-# Month mapping
+# Month mapping with short names (first 3 characters)
 MONTH_NAMES = {
-    1: "January", 2: "February", 3: "March", 4: "April",
-    5: "May", 6: "June", 7: "July", 8: "August",
-    9: "September", 10: "October", 11: "November", 12: "December"
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr",
+    5: "May", 6: "Jun", 7: "Jul", 8: "Aug",
+    9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
 }
 
 def parse_month_from_filename(filename):
@@ -172,8 +171,7 @@ try:
                 continue
             
             table_name = f"Cdr{month_name}"
-            # receive_day_str = cdr_date.replace('-', '')
-
+            receive_day_str = cdr_date.replace('-', '')
             
             # Connect to DB
             conn = pyodbc.connect(CONN_STR)
@@ -196,11 +194,12 @@ try:
             """
             cur.execute(create_table_sql)
             conn.commit()
+            
             inserted = 0
             success = True
             if data_to_insert:
                 insert_sql = f"INSERT INTO [dbo].[{table_name}] ([SmsId], [Destination], [Source], [DeliveredTime], [SmsStatus], [User], [DeliveryStatusId]) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                batch_size = 30000
+                batch_size = 10000
                 for i in range(0, len(data_to_insert), batch_size):
                     batch = data_to_insert[i:i + batch_size]
                     try:
@@ -212,18 +211,12 @@ try:
                         print(f"Error inserting batch: {e}")
                         error_rows.append((batch[:5], str(e)))  # Log first 5 rows of failed batch
                         success = False
-                        break #Stop on error
-            else:
-                inserted = 0
-
+                        break  # Stop on error
+            
             # Run additional queries if insertion successful
             send_sms_records = 0
             different_records = 0
             if success:
-                receive_day_str = cdr_date.replace('-', '')
-
-                print(f"receive day start ====>>>>>> {receive_day_str}")
-                
                 # Query 1: Count from SendSms where DeliveryStatusId = 2
                 query1 = f"""
                 SELECT COUNT(SmsId)
@@ -239,8 +232,6 @@ try:
                     print(f"Error executing query1: {e}")
                     success = False
 
-                print(f"query 1 send sms ====>>>>>> {send_sms_records}")
-                
                 # Query 2: Count differences with join
                 query2 = f"""
                 SELECT COUNT(*)
@@ -256,7 +247,7 @@ try:
                 except Exception as e:
                     print(f"Error executing query2: {e}")
                     success = False
-                
+
                 # If different_records > 0, update SendSms in batches
                 if success and different_records > 0:
                     update_sql = f"""
@@ -283,26 +274,25 @@ try:
                             print(f"Error executing update query: {e}")
                             success = False
                             break
-                                
-                    # Execute stored procedure if all previous steps succeeded
-                    if success:
-                        try:
-                            # Connect to SmsStatictics database
-                            stat_conn = pyodbc.connect(STATISTICS_CONN_STR)
-                            stat_cur = stat_conn.cursor()
-                            stored_proc_sql = """
-                            EXEC [dbo].[S_SyncSendSmsStatsFromArchive] @DayCount = 15
-                            """
-                            stat_cur.execute(stored_proc_sql)
-                            return_value = stat_cur.fetchone()[0] if stat_cur.rowcount != -1 else None
-                            stat_conn.commit()
-                            print(f"Stored procedure executed, return value: {return_value}")
-                            stat_conn.close()
-                        except Exception as e:
-                            print(f"Error executing stored procedure: {e}")
-                            success = False
 
-            
+                # Execute stored procedure if all previous steps succeeded
+                if success:
+                    try:
+                        # Connect to SmsStatictics database
+                        stat_conn = pyodbc.connect(STATISTICS_CONN_STR)
+                        stat_cur = stat_conn.cursor()
+                        stored_proc_sql = """
+                        EXEC [dbo].[S_SyncSendSmsStatsFromArchive] @DayCount = 15
+                        """
+                        stat_cur.execute(stored_proc_sql)
+                        return_value = stat_cur.fetchone()[0] if stat_cur.rowcount != -1 else None
+                        stat_conn.commit()
+                        print(f"Stored procedure executed, return value: {return_value}")
+                        stat_conn.close()
+                    except Exception as e:
+                        print(f"Error executing stored procedure: {e}")
+                        success = False
+
             # Create CdrInfo if not exists
             create_cdrinfo_sql = """
             IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='CdrInfo' AND xtype='U')
@@ -321,10 +311,8 @@ try:
             cur.execute(create_cdrinfo_sql)
             conn.commit()
             
-            # Insert into CdrInfo
+            # Insert into CdrInfo with updated values
             now = datetime.now()
-            # different_records = total_records - delivery_records
-            # send_sms_records = delivery_records
             cur.execute("""
                 INSERT INTO [dbo].[CdrInfo] (
                     [TotalRecords], [TotalDeliveryRecords], [TotalInserted], [SendSmsRecords],
@@ -335,13 +323,14 @@ try:
             conn.commit()
             
             conn.close()
-            print(f"Processed {filename}: Total={total_records}, Delivered={delivery_records}, Inserted={inserted}")
+            print(f"Processed {filename}: Total={total_records}, Delivered={delivery_records}, Inserted={inserted}, SendSmsRecords={send_sms_records}, DifferentRecords={different_records}")
             if error_rows:
                 print(f"Error rows (first 5): {error_rows[:5]}")
             
             if success:
                 # Move file on FTP to CDR_[short_month_name] folder
-                cdr_folder = f"CDR_{month_name}"
+                short_month_name = month_name[:3]
+                cdr_folder = f"CDR_{short_month_name}"
                 try:
                     ftp.cwd(cdr_folder)
                     ftp.cwd('..')  # If exists, go back
@@ -356,19 +345,18 @@ try:
                     print(f"Moved {filename} to {new_path}")
                 except ftplib.error_perm as e:
                     print(f"Failed to move {filename} to {new_path}: {str(e)}")
+                    success = False
                 
                 # Delete local file
-                try:
-                    os.remove(local_path)
-                    print(f"Deleted local file: {local_path}")
-                except OSError as e:
-                    print(f"Failed to delete local file {local_path}: {str(e)}")
+                if success:
+                    try:
+                        os.remove(local_path)
+                        print(f"Deleted local file: {local_path}")
+                    except OSError as e:
+                        print(f"Failed to delete local file {local_path}: {str(e)}")
+                        success = False
             else:
-                print(f"Insertion failed for {filename}, not moving or deleting.")
-
-            print(" =====================>>>>>>>>>>>>>> Task started")
-            time.sleep(30)  # Pauses execution for 30 seconds
-            print("Task resumed after 30 seconds")
+                print(f"Processing failed for {filename}, not moving or deleting.")
 
 except Exception as e:
     print("Error occurred:", str(e))
