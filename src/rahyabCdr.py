@@ -4,6 +4,7 @@ import gzip
 import pyodbc
 import csv
 from datetime import datetime
+import time
 
 # FTP connection details
 FTP_HOST = "ftp.rahyab.ir"
@@ -192,8 +193,8 @@ try:
             """
             cur.execute(create_table_sql)
             conn.commit()
-            
             inserted = 0
+            success = True
             if data_to_insert:
                 insert_sql = f"INSERT INTO [dbo].[{table_name}] ([SmsId], [Destination], [Source], [DeliveredTime], [SmsStatus], [User], [DeliveryStatusId]) VALUES (?, ?, ?, ?, ?, ?, ?)"
                 batch_size = 30000
@@ -207,6 +208,8 @@ try:
                     except Exception as e:
                         print(f"Error inserting batch: {e}")
                         error_rows.append((batch[:5], str(e)))  # Log first 5 rows of failed batch
+                        success = False
+                        break #Stop on error
             else:
                 inserted = 0
             
@@ -246,8 +249,36 @@ try:
             if error_rows:
                 print(f"Error rows (first 5): {error_rows[:5]}")
             
-            # Optional: Delete downloaded file after processing
-            # os.remove(local_path)
+            if success:
+                # Move file on FTP to CDR_[short_month_name] folder
+                cdr_folder = f"CDR_{month_name}"
+                try:
+                    ftp.cwd(cdr_folder)
+                    ftp.cwd('..')  # If exists, go back
+                except ftplib.error_perm:
+                    print(f"Creating folder {cdr_folder} on FTP...")
+                    ftp.mkd(cdr_folder)
+                
+                new_path = f"{cdr_folder}/{filename}"
+                print(f"Moving {filename} to {new_path} on FTP...")
+                try:
+                    ftp.rename(filename, new_path)
+                    print(f"Moved {filename} to {new_path}")
+                except ftplib.error_perm as e:
+                    print(f"Failed to move {filename} to {new_path}: {str(e)}")
+                
+                # Delete local file
+                try:
+                    os.remove(local_path)
+                    print(f"Deleted local file: {local_path}")
+                except OSError as e:
+                    print(f"Failed to delete local file {local_path}: {str(e)}")
+            else:
+                print(f"Insertion failed for {filename}, not moving or deleting.")
+
+            print(" =====================>>>>>>>>>>>>>> Task started")
+            time.sleep(30)  # Pauses execution for 30 seconds
+            print("Task resumed after 30 seconds")
 
 except Exception as e:
     print("Error occurred:", str(e))
