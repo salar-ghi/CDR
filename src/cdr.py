@@ -25,6 +25,9 @@ MONTH_NAMES = {
     9: "September", 10: "October", 11: "November", 12: "December"
 }
 
+# Track last NOOP time
+last_noop_time = time.time()
+
 def parse_month_from_filename(filename):
     try:
         date_part = filename.split('_')[1].split('.')[0]
@@ -58,12 +61,16 @@ def validate_and_format_datetime(dt_str):
         return None
 
 def keep_ftp_alive(ftp):
-    """Send NOOP to keep FTP connection alive."""
-    try:
-        ftp.voidcmd("NOOP")
-        print("Sent FTP NOOP to keep connection alive")
-    except Exception as e:
-        print(f"Error sending NOOP: {str(e)}")
+    """Send NOOP to keep FTP connection alive if 5 minutes have passed."""
+    global last_noop_time
+    current_time = time.time()
+    if current_time - last_noop_time >= 300:  # 5 minutes
+        try:
+            ftp.voidcmd("NOOP")
+            print("Sent FTP NOOP to keep connection alive")
+            last_noop_time = current_time
+        except Exception as e:
+            print(f"Error sending NOOP: {str(e)}")
 
 def reconnect_ftp():
     """Reconnect to FTP server."""
@@ -226,7 +233,7 @@ try:
         duplicates_skipped = 0  # Track skipped duplicates
         if data_to_insert:
             insert_sql = f"INSERT INTO [dbo].[{table_name}] ([SmsId], [Destination], [Source], [DeliveredTime], [SmsStatus], [User], [DeliveryStatusId]) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            batch_size = 10000
+            batch_size = 30000
             check_batch_size = 1000  # Smaller batch for duplicate checks to avoid query timeouts
             for i in range(0, len(data_to_insert), batch_size):
                 batch = data_to_insert[i:i + batch_size]
@@ -351,7 +358,7 @@ try:
                     stat_cur = stat_conn.cursor()
                     stored_proc_sql = """
                     DECLARE @return_value int
-                    EXEC @return_value = [dbo].[S_SyncSendSmsStatsFromArchive] @DayCount = 28
+                    EXEC @return_value = [dbo].[S_SyncSendSmsStatsFromArchive] @DayCount = 15
                     SELECT @return_value AS ReturnValue
                     """
                     stat_cur.execute(stored_proc_sql)
